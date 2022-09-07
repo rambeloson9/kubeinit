@@ -4,29 +4,29 @@
 # Licence pour la langue spécifique régissant les autorisations et les limitations
 # sous la licence.
 
-- name: Deploy the cluster bootstrap node
-  ansible.builtin.include_role:
-    name: kubeinit.kubeinit.kubeinit_libvirt
-    tasks_from: deploy_coreos_guest.yml
-    public: yes
-  loop: "{{ groups['all_extra_nodes'] }}"
-  loop_control:
-    loop_var: kubeinit_deployment_node_name
-  vars:
-    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
-    kubeinit_ignition_name: bootstrap
+#- name: Deploy the cluster bootstrap node
+#  ansible.builtin.include_role:
+#    name: kubeinit.kubeinit.kubeinit_libvirt
+#    tasks_from: deploy_coreos_guest.yml
+#    public: yes
+#  loop: "{{ groups['all_extra_nodes'] }}"
+#  loop_control:
+#    loop_var: kubeinit_deployment_node_name
+#  vars:
+#    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
+#    kubeinit_ignition_name: bootstrap
 
-- name: Deploy the cluster controller nodes
-  ansible.builtin.include_role:
-    name: kubeinit.kubeinit.kubeinit_libvirt
-    tasks_from: deploy_coreos_guest.yml
-    public: yes
-  loop: "{{ groups['all_controller_nodes'] }}"
-  loop_control:
-    loop_var: kubeinit_deployment_node_name
-  vars:
-    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
-    kubeinit_ignition_name: master
+#- name: Deploy the cluster controller nodes
+#  ansible.builtin.include_role:
+#    name: kubeinit.kubeinit.kubeinit_libvirt
+#    tasks_from: deploy_coreos_guest.yml
+#    public: yes
+#  loop: "{{ groups['all_controller_nodes'] }}"
+#  loop_control:
+#    loop_var: kubeinit_deployment_node_name
+#  vars:
+#    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
+#    kubeinit_ignition_name: master
 
 - name: Verify that controller nodes are ok
   ansible.builtin.shell: |
@@ -42,17 +42,41 @@
   delegate_to: "{{ kubeinit_provision_service_node }}"
   until: _result.stdout_lines | default([]) | list | length == kubeinit_controller_count|int
 
-- name: Deploy the cluster compute nodes
-  ansible.builtin.include_role:
-    name: kubeinit.kubeinit.kubeinit_libvirt
-    tasks_from: deploy_coreos_guest.yml
-    public: yes
-  loop: "{{ groups['all_compute_nodes'] | default([]) }}"
-  loop_control:
-    loop_var: kubeinit_deployment_node_name
-  vars:
-    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
-    kubeinit_ignition_name: worker
+#- name: Use single node cluster
+#  ansible.builtin.shell: |
+#    set -o pipefail
+#    export KUBECONFIG=~/install_dir/auth/kubeconfig
+#    oc get nodes
+#    oc patch clusterversion/version --type='merge' -p "$(cat <<- EOF
+#    spec:
+#      overrides:
+#        - group: apps/v1
+#          kind: Deployment
+#          name: etcd-quorum-guard
+#          namespace: openshift-machine-config-operator
+#          unmanaged: true
+#    EOF
+#    )"
+#    oc scale --replicas=1 deployment/etcd-quorum-guard -n openshift-machine-config-operator || true
+#    oc scale --replicas=1 ingresscontroller/default -n openshift-ingress-operator || true
+#    oc scale --replicas=1 deployment.apps/console -n openshift-console || true
+#    oc scale --replicas=1 deployment.apps/downloads -n openshift-console || true
+#    oc scale --replicas=1 deployment.apps/oauth-openshift -n openshift-authentication || true
+#    oc scale --replicas=1 deployment.apps/packageserver -n openshift-operator-lifecycle-manager || true
+    # Optional
+#    oc scale --replicas=1 deployment.apps/prometheus-adapter -n openshift-monitoring || true
+#    oc scale --replicas=1 deployment.apps/thanos-querier -n openshift-monitoring || true
+#    oc scale --replicas=1 statefulset.apps/prometheus-k8s -n openshift-monitoring || true
+#    oc scale --replicas=1 statefulset.apps/alertmanager-main -n openshift-monitoring || true
+#    oc patch etcd cluster -p='{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableEtcd": true }}}' --type=merge
+#    oc patch authentications.operator.openshift.io cluster -p='{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableOAuthServer": true }}}' --type=merge
+#  args:
+#    executable: /bin/bash
+#  register: _result
+#  changed_when: "_result.rc == 0"
+#  delegate_to: "{{ kubeinit_provision_service_node }}"
+#  when: kubeinit_controller_count|int == 1
+
 
 - name: Complete the cluster deployment on the provision service node
   block:

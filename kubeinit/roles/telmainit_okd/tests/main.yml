@@ -1,5 +1,10 @@
-- hosts: all
-  become: true
+---
+- name: Deployer Okd 4.x Cluster
+  hosts: all
+  gather_facts: yes
+  become: yes
 
-  #suite ...
-  
+  tasks:
+  - name: Lancer le role telmainit_okd
+    import_role:
+      name: telmainit_okd

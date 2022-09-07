@@ -2,5 +2,5 @@
 ****Bare metal*****
 
 
-Installer un cluster provisionné par l'utilisateur sur système nu étape par étape
+Installer un cluster provisionné par l'utilisateur sur système nu
 

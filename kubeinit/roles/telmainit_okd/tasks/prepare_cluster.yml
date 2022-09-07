@@ -42,6 +42,8 @@
   ansible.builtin.include_role:
     name: kubeinit.kubeinit.kubeinit_services
     tasks_from: create_provision_container.yml
+  
+  
   vars:
     kubeinit_deployment_node_name: "{{ kubeinit_provision_service_node }}"
     kubeinit_deployment_pod_name: "{{ hostvars[kubeinit_provision_service_node].guest_name }}-pod"
