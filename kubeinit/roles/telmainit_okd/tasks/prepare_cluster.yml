@@ -1,0 +1,294 @@
+# Droits d'auteur des contributeurs kubeinit
+# Tous les droits sont réservés.
+#
+# Licence sous la licence Apache, version 2.0 (la "Licence"); tu peux
+# Ne pas utiliser ce fichier sauf en conformité avec la Licence. Vous pouvez obtenir
+# une copie de la licence à
+
+#  http://www.apache.org/licenses/LICENSE-2.0
+
+# Sauf si requis par la loi applicable ou convenu par écrit, le logiciel
+# distribué sous licence est distribué sur une BASE "TEL QUEL", SANS
+# GARANTIES OU CONDITIONS DE QUELQUE NATURE QUE CE SOIT, expresses ou implicites. Voir le
+# Licence pour la langue spécifique régissant les autorisations et les limitations
+# sous la licence.
+
+# Toutes les variables destinées à être modifiées doivent être placées dans ce fichier.
+
+# Toutes les variables de ce rôle doivent avoir un préfixe de "kubeinit_okd_"
+
+- name: Override initial pullsecret with fake auth
+  ansible.builtin.set_fact:
+    kubeinit_okd_registry_pullsecret: '  { "auths": { "fakeregistry:5000": { "auth": "foo" } } }'
+  when: not 'registry' in kubeinit_cluster_hostvars.services and kubeinit_okd_registry_pullsecret_empty in kubeinit_okd_registry_pullsecret
+
+- name: Debug kubeinit_okd_registry_pullsecret before overriding kubeinit_registry_pullsecret
+  ansible.builtin.debug:
+    var: kubeinit_okd_registry_pullsecret
+
+
+# Cette tâche remplacera le pullsecret "vide" par défaut du playbook du registre
+# avec le contenu du pullsecret défini dans le playbook OKD
+
+- name: Assign a default pullsecret when we use a local registry and deploying OKD
+  ansible.builtin.set_fact:
+    kubeinit_registry_pullsecret: '  {{ kubeinit_okd_registry_pullsecret }}'
+
+- name: Debug kubeinit_registry_pullsecret after overriding it
+  ansible.builtin.debug:
+    var: kubeinit_registry_pullsecret
+
+- name: Setup the cluster provision container
+  ansible.builtin.include_role:
+    name: kubeinit.kubeinit.kubeinit_services
+    tasks_from: create_provision_container.yml
+  vars:
+    kubeinit_deployment_node_name: "{{ kubeinit_provision_service_node }}"
+    kubeinit_deployment_pod_name: "{{ hostvars[kubeinit_provision_service_node].guest_name }}-pod"
+    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_provision_service_node].target }}"
+    kubeinit_deployment_os: "{{ hostvars[kubeinit_provision_service_node].os }}"
+
+- name: Delegate to the provision service node
+  block:
+
+    - name: "Render net info"
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "{{ kubeinit_okd_pod_cidr }}" > ~/pod_cidr
+        echo "{{ kubeinit_okd_service_cidr }}" > ~/service_cidr
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+
+    - name: Install services requirements
+      ansible.builtin.yum:
+        name: socat
+        state: present
+        use_backend: dnf
+
+## Obtention du programme d’installation ###
+
+    - name: Download okd installer
+      ansible.builtin.get_url:
+        url: "{{ kubeinit_okd_dependencies.installer }}"
+        dest: ~/
+        mode: 0644
+
+    - name: Download okd client
+      ansible.builtin.get_url:
+        url: "{{ kubeinit_okd_dependencies.client }}"
+        dest: ~/
+        mode: 0644
+
+    - name: Install okd client and installer
+      ansible.builtin.shell: |
+        set -o pipefail
+        dnf install -y libvirt
+        cd
+        rm -rf install_dir
+        mkdir install_dir
+        for f in *.tar.gz; do tar -xvf "$f"; done
+        mv kubectl oc openshift-install /usr/local/bin/
+        oc version
+        openshift-install version
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+
+    - name: Check FCOS version and stream match
+      ansible.builtin.shell: |
+        set -o pipefail
+        main_str=$(openshift-install coreos print-stream-json | jq -r '.architectures.x86_64.artifacts.openstack.formats["qcow2.xz"]'.disk.location)
+        if [[ "$main_str" == *"{{ kubeinit_okd_fcos_release }}"* ]]; then
+            echo "OK: The deployed FCOS version matches the openshift installer information."
+        else
+            echo "FAILURE: The deployed FCOS version {{ kubeinit_okd_fcos_release }} do not match the openshift installer information."
+            echo "FAILURE: It should be: $main_str"
+        fi
+        if [[ "$main_str" == *"{{ kubeinit_okd_fcos_stream }}"* ]]; then
+            echo "OK: The deployed FCOS stream matches the openshift installer information."
+        else
+            echo "FAILURE: The deployed FCOS stream {{ kubeinit_okd_fcos_stream }} do not match the openshift installer information."
+            echo "FAILURE: It should be testing of stable depending on: $main_str"
+        fi
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+      failed_when: "'FAILURE' in _result.stdout"
+
+- name: Set name of CoreOS distribution
+  ansible.builtin.set_fact:
+    kubeinit_coreos_distribution: "{{ 'rhcos' if (kubeinit_okd_openshift_deploy) else 'fcos' }}"
+
+- name: Download kernel image
+  ansible.builtin.get_url:
+    validate_certs: False
+    use_proxy: True
+    url: "{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].uri }}{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].kernel }}"
+    dest: "{{ kubeinit_libvirt_target_image_dir }}/{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].kernel }}"
+    force: no
+    mode: '0666'
+  loop: "{{ groups['kubeinit_hypervisors'] }}"
+  loop_control:
+    loop_var: kubeinit_deployment_node_name
+  delegate_to: "{{ kubeinit_deployment_node_name }}"
+
+- name: Download initrd image
+  ansible.builtin.get_url:
+    validate_certs: False
+    use_proxy: True
+    url: "{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].uri }}{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].initrd }}"
+    dest: "{{ kubeinit_libvirt_target_image_dir }}/{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].initrd }}"
+    force: no
+    mode: '0666'
+  loop: "{{ groups['kubeinit_hypervisors'] }}"
+  loop_control:
+    loop_var: kubeinit_deployment_node_name
+  delegate_to: "{{ kubeinit_deployment_node_name }}"
+
+- name: Create the treeinfo directory for FCOS
+  ansible.builtin.shell: |
+    cat <<EOF > {{ kubeinit_libvirt_target_image_dir }}/.treeinfo
+    [general]
+    arch = x86_64
+    family = Fedora CoreOS
+    platforms = x86_64
+    version = kubeinit_libvirt_fcos_release.split(".")[0]
+    [images-x86_64]
+    initrd = {{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].initrd }}
+    kernel = {{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].kernel }}
+    EOF
+  args:
+    executable: /bin/bash
+  register: _result
+  changed_when: "_result.rc == 0"
+  loop: "{{ groups['kubeinit_hypervisors'] }}"
+  loop_control:
+    loop_var: kubeinit_deployment_node_name
+  delegate_to: "{{ kubeinit_deployment_node_name }}"
+  when: not kubeinit_okd_openshift_deploy
+
+- name: Delegate to kubeinit_provision_service_node
+  block:
+
+    - name: Create OKD directory for apache
+      ansible.builtin.file:
+        path: "/var/kubeinit/html/okd4"
+        state: directory
+        mode: 0775
+        recurse: yes
+
+    - name: Download initrd image
+      ansible.builtin.get_url:
+        url: "{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].uri }}{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].initrd }}"
+        dest: "/var/kubeinit/html/okd4/"
+        mode: 0775
+
+    - name: Download rootfs image
+      ansible.builtin.get_url:
+        url: "{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].uri }}{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].rootfs }}"
+        dest: "/var/kubeinit/html/okd4/"
+        mode: 0775
+
+    - name: Download raw image
+      ansible.builtin.get_url:
+        url: "{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].uri }}{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].raw }}"
+        dest: "/var/kubeinit/html/okd4/"
+        mode: 0775
+
+    - name: Download signature file
+      ansible.builtin.get_url:
+        url: "{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].uri }}{{ kubeinit_okd_coreos_images[kubeinit_coreos_distribution].sig }}"
+        dest: "/var/kubeinit/html/okd4/"
+        mode: 0775
+      when: not kubeinit_okd_openshift_deploy
+
+    - name: Render the cluster template
+      ansible.builtin.template:
+        src: "install-config.yaml.j2"
+        dest: "~/install_dir/install-config.yaml"
+        mode: '0644'
+
+    - name: Backup the install config file
+      ansible.builtin.shell: |
+        cp ~/install_dir/install-config.yaml ~/install-config.yaml
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+
+    - name: Render the bootstrap details
+      ansible.builtin.shell: |
+        openshift-install create manifests --dir=install_dir/
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+
+    - name: Enable master schedulable if there are no worker nodes
+      ansible.builtin.shell: |
+        set -o pipefail
+        cd
+        yaml_file="install_dir/manifests/cluster-scheduler-02-config.yml"
+        key="mastersSchedulable"
+        new_value="true"
+        sed -r "s/^(\s*${key}\s*:\s*).*/\1${new_value}/" -i "$yaml_file"
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+      when: not kubeinit_compute_count|int > 0
+
+    - name: Disable master schedulable if there is at least one worker node
+      ansible.builtin.shell: |
+        set -o pipefail
+        cd
+        yaml_file="install_dir/manifests/cluster-scheduler-02-config.yml"
+        key="mastersSchedulable"
+        new_value="false"
+        sed -r "s/^(\s*${key}\s*:\s*).*/\1${new_value}/" -i "$yaml_file"
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+      when: kubeinit_compute_count|int > 0
+
+    - name: Render ignition files
+      ansible.builtin.shell: |
+        # We backup first the manifests
+        tar -czvf install_manifests_backup.tar.gz ~/install_dir/
+        openshift-install create ignition-configs --dir=install_dir/
+        cp -R install_dir/* "/var/kubeinit/html/okd4/"
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+
+    - name: Apply permissions to the apache folder
+      ansible.builtin.file:
+        path: "/var/kubeinit/html/"
+        state: directory
+        recurse: yes
+        mode: '0755'
+
+    - name: Create kube directory
+      ansible.builtin.file:
+        path: ~/.kube
+        state: directory
+        mode: '0644'
+
+    - name: Autoload kubeconfig
+      ansible.builtin.shell: |
+        echo "export KUBECONFIG=~/install_dir/auth/kubeconfig" >> ~/.bashrc
+      args:
+        executable: /bin/bash
+      ignore_errors: yes
+      register: _result
+      changed_when: "_result.rc == 0"
+
+  delegate_to: "{{ kubeinit_provision_service_node }}"
+
+    

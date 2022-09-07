@@ -1,0 +1,109 @@
+# Sauf si requis par la loi applicable ou convenu par écrit, le logiciel
+# distribué sous licence est distribué sur une BASE "TEL QUEL", SANS
+# GARANTIES OU CONDITIONS DE QUELQUE NATURE QUE CE SOIT, expresses ou implicites. Voir le
+# Licence pour la langue spécifique régissant les autorisations et les limitations
+# sous la licence.
+
+- name: Deploy the cluster bootstrap node
+  ansible.builtin.include_role:
+    name: kubeinit.kubeinit.kubeinit_libvirt
+    tasks_from: deploy_coreos_guest.yml
+    public: yes
+  loop: "{{ groups['all_extra_nodes'] }}"
+  loop_control:
+    loop_var: kubeinit_deployment_node_name
+  vars:
+    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
+    kubeinit_ignition_name: bootstrap
+
+- name: Deploy the cluster controller nodes
+  ansible.builtin.include_role:
+    name: kubeinit.kubeinit.kubeinit_libvirt
+    tasks_from: deploy_coreos_guest.yml
+    public: yes
+  loop: "{{ groups['all_controller_nodes'] }}"
+  loop_control:
+    loop_var: kubeinit_deployment_node_name
+  vars:
+    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
+    kubeinit_ignition_name: master
+
+- name: Verify that controller nodes are ok
+  ansible.builtin.shell: |
+    set -o pipefail
+    export KUBECONFIG=~/install_dir/auth/kubeconfig; \
+    oc get nodes | grep master | grep " Ready"
+  args:
+    executable: /bin/bash
+  register: _result
+  changed_when: "_result.rc == 0"
+  retries: 60
+  delay: 60
+  delegate_to: "{{ kubeinit_provision_service_node }}"
+  until: _result.stdout_lines | default([]) | list | length == kubeinit_controller_count|int
+
+- name: Deploy the cluster compute nodes
+  ansible.builtin.include_role:
+    name: kubeinit.kubeinit.kubeinit_libvirt
+    tasks_from: deploy_coreos_guest.yml
+    public: yes
+  loop: "{{ groups['all_compute_nodes'] | default([]) }}"
+  loop_control:
+    loop_var: kubeinit_deployment_node_name
+  vars:
+    kubeinit_deployment_delegate: "{{ hostvars[kubeinit_deployment_node_name].target }}"
+    kubeinit_ignition_name: worker
+
+- name: Complete the cluster deployment on the provision service node
+  block:
+
+    - name: "wait until all nodes are ready"
+      ansible.builtin.shell: |
+        set -o pipefail
+        export KUBECONFIG=~/install_dir/auth/kubeconfig; \
+        oc get csr -ojson | jq -r '.items[] | .metadata.name' | xargs oc adm certificate approve >/dev/null 2>&1; \
+        oc get nodes | grep " Ready"
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+      retries: 60
+      delay: 60
+      until: _result.stdout_lines | default([]) | list | length == kubeinit_cluster_node_count|int
+
+    - name: Copy the kubeconfig
+      ansible.builtin.shell: |
+        cp ~/install_dir/auth/kubeconfig ~/.kube/config
+      args:
+        executable: /bin/bash
+      register: _result
+      changed_when: "_result.rc == 0"
+
+    - name: Get some final cluster information
+      ansible.builtin.shell: |
+        set -eo pipefail
+        export KUBECONFIG=~/install_dir/auth/kubeconfig
+        oc get nodes
+      args:
+        executable: /bin/bash
+      ignore_errors: yes
+      register: _result_cluster_info
+      changed_when: "_result_cluster_info.rc == 0"
+
+    - name: Display final debug info
+      ansible.builtin.debug:
+        var: _result_cluster_info
+
+    - name: Print some final data
+      vars:
+        msg: |
+          Get the kubeadmin password from the services machine
+            cat ~/install_dir/auth/kubeadmin-password
+          The OpenShift UI endpoint is:
+            console-openshift-console.apps.{{ kubeinit_cluster_fqdn }}
+      ansible.builtin.debug:
+        msg: "{{ msg.split('\n') }}"
+
+  vars:
+    kubeinit_deployment_node_name: "{{ kubeinit_provision_service_node }}"
+  delegate_to: "{{ kubeinit_deployment_node_name }}"  
